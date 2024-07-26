@@ -24,6 +24,7 @@ from pyquaternion import Quaternion
 from shapely import affinity
 from shapely.geometry import Polygon, MultiPolygon, LineString, Point, box
 from tqdm import tqdm
+from io import BytesIO
 
 from nuscenes.map_expansion.arcline_path_utils import discretize_lane, ArcLinePath
 from nuscenes.map_expansion.bitmap import BitMap
@@ -311,7 +312,7 @@ class NuScenesMap:
                             render_outside_im: bool = True,
                             layer_names: List[str] = None,
                             verbose: bool = True,
-                            out_path: str = None) -> Tuple[Figure, Axes]:
+                            out_path: str = None, close_fig=False) -> Union[Tuple[Figure, Axes], np.ndarray]:
         """
         Render a nuScenes camera image and overlay the polygons for the specified map layers.
         Note that the projections are not always accurate as the localization is in 2d.
@@ -332,22 +333,9 @@ class NuScenesMap:
             nusc, sample_token, camera_channel=camera_channel, alpha=alpha,
             patch_radius=patch_radius, min_polygon_area=min_polygon_area,
             render_behind_cam=render_behind_cam, render_outside_im=render_outside_im,
-            layer_names=layer_names, verbose=verbose, out_path=out_path)
+            layer_names=layer_names, verbose=verbose, out_path=out_path, close_fig=close_fig)
     
-    def get_bev_masks_for_map(self,
-        nusc: NuScenes,
-        sample_token: str,
-        camera_channel: str = 'CAM_FRONT',
-        alpha: float = 0.3,
-        patch_radius: float = 10000,
-        min_polygon_area: float = 0,
-        layer_names: List[str] = None,
-        output_shape: Tuple = (1000, 1000),
-        verbose: bool = True,
-        out_path: str = None) -> Tuple[Figure, Axes]:
-        
-        return self.explorer.get_bev_masks_for_map(nusc, sample_token, camera_channel, alpha, patch_radius, min_polygon_area, layer_names, output_shape, verbose, out_path)
-    
+
     def render_egoposes_on_fancy_map(self,
                                      nusc: NuScenes,
                                      scene_tokens: List = None,
@@ -1087,7 +1075,7 @@ class NuScenesMapExplorer:
                             render_outside_im: bool = True,
                             layer_names: List[str] = None,
                             verbose: bool = True,
-                            out_path: str = None) -> Tuple[Figure, Axes]:
+                            out_path: str = None, close_fig=False) -> Union[Tuple[Figure, Axes], np.ndarray]:
         """
         Render a nuScenes camera image and overlay the polygons for the specified map layers.
         Note that the projections are not always accurate as the localization is in 2d.
@@ -1231,7 +1219,18 @@ class NuScenesMapExplorer:
             plt.tight_layout()
             plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
 
-        return fig, ax
+        if close_fig:
+            buf = BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, bbox_inches='tight', pad_inches=0, dpi=fig.dpi)
+            buf.seek(0)
+            img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            img = cv2.imdecode(img_arr, 1)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            plt.close()
+            return img
+        else:
+            return fig, ax
 
     def get_bev_masks_for_map(self,
             nusc: NuScenes,
@@ -1285,7 +1284,6 @@ class NuScenesMapExplorer:
         ego_pose = poserecord['translation']
         rot_mat = Quaternion(poserecord['rotation']).rotation_matrix.T
         roll, pitch, yaw = x_y_z_euler_angles_from_rotation_matrix(rot_mat)
-        print('here', roll, pitch, yaw)
 
         patch_box = (ego_pose[0], ego_pose[1], patch_radius, patch_radius)
         if isinstance(yaw, list):
@@ -1294,194 +1292,11 @@ class NuScenesMapExplorer:
             patch_angle = yaw*(180/np.pi)
         canvas_size = output_shape
 
-        masks = self.get_map_mask(patch_box, patch_angle,
+        masks = self.get_map_mask(patch_box, -patch_angle,
                                              layer_names=layer_names, canvas_size=canvas_size)
         
         return {layer_names[i]: masks[i] for i in range(len(layer_names))}
     
-    
-    def get_bev_masks_for_map_v2(self,
-            nusc: NuScenes,
-            sample_token: str,
-            camera_channel: str = 'CAM_FRONT',
-            alpha: float = 0.3,
-            patch_radius: float = 100,
-            min_polygon_area: float = 0,
-            layer_names: List[str] = None,
-            output_shape: Tuple = (1000, 1000),
-            verbose: bool = True,
-            out_path: str = None) -> Tuple[Figure, Axes]:
-        """
-        Render a nuScenes camera image and overlay the polygons for the specified map layers.
-        Note that the projections are not always accurate as the localization is in 2d.
-        :param nusc: The NuScenes instance to load the image from.
-        :param sample_token: The image's corresponding sample_token.
-        :param camera_channel: Camera channel name, e.g. 'CAM_FRONT'.
-        :param alpha: The transparency value of the layers to render in [0, 1].
-        :param patch_radius: The radius in meters around the ego car in which to select map records.
-        :param min_polygon_area: Minimum area a polygon needs to have to be rendered.
-        :param layer_names: The names of the layers to render, e.g. ['lane'].
-            If set to None, the recommended setting will be used.
-        :param output_shape: spatial dims of the BEV output   
-        :param verbose: Whether to print to stdout.
-        :param out_path: Optional path to save the rendered figure to disk.
-        """
-        near_plane = 1e-8
-
-        if verbose:
-            print('Warning: Note that the BEV should be accurate as the localization is in 2d.')
-
-        # Default layers.
-        if layer_names is None:
-            layer_names = ['road_segment', 'lane', 'ped_crossing', 'walkway', 'stop_line', 'carpark_area']
-
-        # Check layers whether we can render them.
-        for layer_name in layer_names:
-            assert layer_name in self.map_api.non_geometric_polygon_layers, \
-                'Error: Can only render non-geometry polygons: %s' % layer_names
-
-        # Check that NuScenesMap was loaded for the correct location.
-        sample_record = nusc.get('sample', sample_token)
-        scene_record = nusc.get('scene', sample_record['scene_token'])
-        log_record = nusc.get('log', scene_record['log_token'])
-        log_location = log_record['location']
-        assert self.map_api.map_name == log_location, \
-            'Error: NuScenesMap loaded for location %s, should be %s!' % (self.map_api.map_name, log_location)
-
-        # Grab the front camera image and intrinsics.
-        cam_token = sample_record['data'][camera_channel]
-        cam_record = nusc.get('sample_data', cam_token)
-        # cam_path = nusc.get_sample_data_path(cam_token)
-        # im = Image.open(cam_path)
-        # im_size = im.size
-        # cs_record = nusc.get('calibrated_sensor', cam_record['calibrated_sensor_token'])
-        # cam_intrinsic = np.array(cs_record['camera_intrinsic'])
-
-        # Retrieve the current map.
-        poserecord = nusc.get('ego_pose', cam_record['ego_pose_token'])
-        ego_pose = poserecord['translation']
-        box_coords = (
-            ego_pose[0] - patch_radius,
-            ego_pose[1] - patch_radius,
-            ego_pose[0] + patch_radius,
-            ego_pose[1] + patch_radius,
-        )
-        records_in_patch = self.get_records_in_patch(box_coords, layer_names, 'intersect')
-
-        # Init axes.
-        # fig = plt.figure(figsize=(9, 16))
-        # ax = fig.add_axes([0, 0, 1, 1])
-        # ax.set_xlim(0, im_size[0])
-        # ax.set_ylim(0, im_size[1])
-        # ax.imshow(im)
-
-        layer_masks = []
-
-        # Retrieve and render each record.
-        for layer_name in layer_names:
-            print(layer_name)
-            im = Image.new(mode='RGB', size=output_shape, color=(255, 255, 255))
-            fig = plt.figure(figsize=(9, 16))
-            ax = fig.add_axes([0, 0, 1, 1])
-            ax.set_xlim(0, im.size[0])
-            ax.set_ylim(0, im.size[1])
-            ax.imshow(im)
-            for token in records_in_patch[layer_name]:
-                record = self.map_api.get(layer_name, token)
-                if layer_name == 'drivable_area':
-                    polygon_tokens = record['polygon_tokens']
-                else:
-                    polygon_tokens = [record['polygon_token']]
-
-                for polygon_token in polygon_tokens:
-                    polygon = self.map_api.extract_polygon(polygon_token)
-                    points = np.array(polygon.exterior.xy)
-                    points = np.vstack((points, np.ones((1, points.shape[1]))))
-                    # # Transform into the ego vehicle frame for the timestamp of the image.
-                    points = points - np.array(poserecord['translation']).reshape((-1, 1))
-                    points = np.dot(Quaternion(poserecord['rotation']).rotation_matrix.T, points)
-
-                    points = points*1000/(2*patch_radius)
-                    points = points[:2, :]
-                    points = [(p0, p1) for (p0, p1) in zip(points[0], points[1])]
-                    polygon = Polygon(points)
-                    # # Convert polygon nodes to pointcloud with 0 height.
-                    # points = np.array(polygon.exterior.xy)
-                    # points = np.vstack((points, np.zeros((1, points.shape[1]))))
-
-                    # # Transform into the ego vehicle frame for the timestamp of the image.
-                    # points = points - np.array(poserecord['translation']).reshape((-1, 1))
-                    # points = np.dot(Quaternion(poserecord['rotation']).rotation_matrix.T, points)
-
-                    # # Transform into the camera.
-                    # points = points - np.array(cs_record['translation']).reshape((-1, 1))
-                    # points = np.dot(Quaternion(cs_record['rotation']).rotation_matrix.T, points)
-
-                    # # Remove points that are partially behind the camera.
-                    # depths = points[2, :]
-                    # behind = depths < near_plane
-                    # if np.all(behind):
-                    #     continue
-
-                    # if render_behind_cam:
-                    #     # Perform clipping on polygons that are partially behind the camera.
-                    #     points = NuScenesMapExplorer._clip_points_behind_camera(points, near_plane)
-                    # elif np.any(behind):
-                    #     # Otherwise ignore any polygon that is partially behind the camera.
-                    #     continue
-
-                    # # Ignore polygons with less than 3 points after clipping.
-                    # if len(points) == 0 or points.shape[1] < 3:
-                    #     continue
-
-                    # # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
-                    # points = view_points(points, cam_intrinsic, normalize=True)
-
-                    # # Skip polygons where all points are outside the image.
-                    # # Leave a margin of 1 pixel for aesthetic reasons.
-                    # inside = np.ones(points.shape[1], dtype=bool)
-                    # inside = np.logical_and(inside, points[0, :] > 1)
-                    # inside = np.logical_and(inside, points[0, :] < im.size[0] - 1)
-                    # inside = np.logical_and(inside, points[1, :] > 1)
-                    # inside = np.logical_and(inside, points[1, :] < im.size[1] - 1)
-                    # if render_outside_im:
-                    #     if np.all(np.logical_not(inside)):
-                    #         continue
-                    # else:
-                    #     if np.any(np.logical_not(inside)):
-                    #         continue
-
-                    # points = points[:2, :]
-                    # points = [(p0, p1) for (p0, p1) in zip(points[0], points[1])]
-                    # polygon_proj = Polygon(points)
-
-                    # Filter small polygons
-                    if polygon.area < min_polygon_area:
-                        continue
-
-                    label = layer_name
-                    ax.add_patch(descartes.PolygonPatch(polygon, fc=self.color_map[layer_name], alpha=alpha,
-                                                        label=label))
-
-            if out_path is not None:
-                plt.tight_layout()
-                plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
-            
-            layer_masks.append(im)
-
-    
-
-        # # Display the image.
-        # plt.axis('off')
-        # ax.invert_yaxis()
-
-        # if out_path is not None:
-        #     plt.tight_layout()
-        #     plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
-        
-        return layer_masks
-
-
     def render_egoposes_on_fancy_map(self,
                                      nusc: NuScenes,
                                      scene_tokens: List = None,
