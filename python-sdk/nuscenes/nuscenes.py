@@ -248,7 +248,8 @@ class NuScenes:
     def get_sample_data(self, sample_data_token: str,
                         box_vis_level: BoxVisibility = BoxVisibility.ANY,
                         selected_anntokens: List[str] = None,
-                        use_flat_vehicle_coordinates: bool = False) -> \
+                        use_flat_vehicle_coordinates: bool = False,
+                        visibility_true = False) -> \
             Tuple[str, List[Box], np.array]:
         """
         Returns the data path as well as all annotations related to that sample_data.
@@ -279,12 +280,14 @@ class NuScenes:
         # Retrieve all sample annotations and map to sensor coordinate system.
         if selected_anntokens is not None:
             boxes = list(map(self.get_box, selected_anntokens))
+            visibility = list(map(self.get_visibility, selected_anntokens))
         else:
-            boxes = self.get_boxes(sample_data_token)
+            boxes, visibility = self.get_boxes(sample_data_token)
 
         # Make list of Box objects including coord system transforms.
         box_list = []
-        for box in boxes:
+        visibility_list = []
+        for box, vis in zip(boxes, visibility):
             if use_flat_vehicle_coordinates:
                 # Move box to ego vehicle coord system parallel to world z plane.
                 yaw = Quaternion(pose_record['rotation']).yaw_pitch_roll[0]
@@ -304,8 +307,12 @@ class NuScenes:
                 continue
 
             box_list.append(box)
+            visibility_list.append(vis)
 
-        return data_path, box_list, cam_intrinsic
+        if visibility_true:
+            return data_path, box_list, cam_intrinsic, visibility_list
+        else:
+            return data_path, box_list, cam_intrinsic
 
     def get_box(self, sample_annotation_token: str) -> Box:
         """
@@ -313,8 +320,20 @@ class NuScenes:
         :param sample_annotation_token: Unique sample_annotation identifier.
         """
         record = self.get('sample_annotation', sample_annotation_token)
+        visibility = record['visibility_token']
+
         return Box(record['translation'], record['size'], Quaternion(record['rotation']),
                    name=record['category_name'], token=record['token'])
+
+    def get_visibility(self, sample_annotation_token: str) -> int:
+        """
+        return visibility of a sample annotation record.
+        :param sample_annotation_token: Unique sample_annotation identifier.
+        """
+        record = self.get('sample_annotation', sample_annotation_token)
+        visibility = record['visibility_token']
+
+        return visibility
 
     def get_boxes(self, sample_data_token: str) -> List[Box]:
         """
@@ -332,6 +351,7 @@ class NuScenes:
         if curr_sample_record['prev'] == "" or sd_record['is_key_frame']:
             # If no previous annotations available, or if sample_data is keyframe just return the current ones.
             boxes = list(map(self.get_box, curr_sample_record['anns']))
+            visibility = list(map(self.get_visibility, curr_sample_record['anns']))
 
         else:
             prev_sample_record = self.get('sample', curr_sample_record['prev'])
@@ -350,6 +370,7 @@ class NuScenes:
             t = max(t0, min(t1, t))
 
             boxes = []
+            visibility = []
             for curr_ann_rec in curr_ann_recs:
 
                 if curr_ann_rec['instance_token'] in prev_inst_map:
@@ -372,7 +393,8 @@ class NuScenes:
                     box = self.get_box(curr_ann_rec['token'])
 
                 boxes.append(box)
-        return boxes
+                visibility.append(curr_ann_rec['visibility_token'])
+        return boxes, visibility
 
     def box_velocity(self, sample_annotation_token: str, max_time_diff: float = 1.5) -> np.ndarray:
         """
