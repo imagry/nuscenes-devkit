@@ -542,8 +542,9 @@ class NuScenes:
                                    show_lidarseg_legend: bool = False,
                                    verbose: bool = True,
                                    lidarseg_preds_bin_path: str = None,
-                                   show_panoptic: bool = False) -> None:
-        self.explorer.render_pointcloud_in_image(sample_token, dot_size, pointsensor_channel=pointsensor_channel,
+                                   show_panoptic: bool = False,
+                                   return_points: bool = False) -> None:
+        points = self.explorer.render_pointcloud_in_image(sample_token, dot_size, pointsensor_channel=pointsensor_channel,
                                                  camera_channel=camera_channel, out_path=out_path,
                                                  render_intensity=render_intensity,
                                                  show_lidarseg=show_lidarseg,
@@ -551,7 +552,10 @@ class NuScenes:
                                                  show_lidarseg_legend=show_lidarseg_legend,
                                                  verbose=verbose,
                                                  lidarseg_preds_bin_path=lidarseg_preds_bin_path,
-                                                 show_panoptic=show_panoptic)
+                                                 show_panoptic=show_panoptic,
+                                                 return_points=return_points)
+        if return_points:
+            return points
 
     def render_sample(self, sample_token: str,
                       box_vis_level: BoxVisibility = BoxVisibility.ANY,
@@ -861,7 +865,8 @@ class NuScenesExplorer:
                                 show_lidarseg: bool = False,
                                 filter_lidarseg_labels: List = None,
                                 lidarseg_preds_bin_path: str = None,
-                                show_panoptic: bool = False) -> Tuple:
+                                show_panoptic: bool = False,
+                                return_depth: bool = False) -> Tuple:
         """
         Given a point sensor (lidar/radar) token and camera sample_data token, load pointcloud and map it to the image
         plane.
@@ -991,6 +996,10 @@ class NuScenesExplorer:
         points = points[:, mask]
         coloring = coloring[mask]
 
+        if return_depth:
+            depths = depths[mask]
+            return points, coloring, im, depths
+
         return points, coloring, im
 
     def render_pointcloud_in_image(self,
@@ -1006,7 +1015,8 @@ class NuScenesExplorer:
                                    show_lidarseg_legend: bool = False,
                                    verbose: bool = True,
                                    lidarseg_preds_bin_path: str = None,
-                                   show_panoptic: bool = False):
+                                   show_panoptic: bool = False,
+                                   return_points: bool = False):
         """
         Scatter-plots a pointcloud on top of image.
         :param sample_token: Sample token.
@@ -1034,7 +1044,18 @@ class NuScenesExplorer:
         pointsensor_token = sample_record['data'][pointsensor_channel]
         camera_token = sample_record['data'][camera_channel]
 
-        points, coloring, im = self.map_pointcloud_to_image(pointsensor_token, camera_token,
+        if return_points:
+            points, _, _,depths = self.map_pointcloud_to_image(pointsensor_token, camera_token,
+                                                            render_intensity=render_intensity,
+                                                            show_lidarseg=show_lidarseg,
+                                                            filter_lidarseg_labels=filter_lidarseg_labels,
+                                                            lidarseg_preds_bin_path=lidarseg_preds_bin_path,
+                                                            show_panoptic=show_panoptic,
+                                                            return_depth=True)
+            points[2] = depths
+            return points
+        else:
+            points, coloring, im = self.map_pointcloud_to_image(pointsensor_token, camera_token,
                                                             render_intensity=render_intensity,
                                                             show_lidarseg=show_lidarseg,
                                                             filter_lidarseg_labels=filter_lidarseg_labels,
@@ -1045,9 +1066,12 @@ class NuScenesExplorer:
         if ax is None:
             fig, ax = plt.subplots(1, 1, figsize=(9, 16))
             if lidarseg_preds_bin_path:
-                fig.canvas.set_window_title(sample_token + '(predictions)')
+                # fig.canvas.set_window_title(sample_token + '(predictions)')
+                fig.canvas.manager.set_window_title(sample_token + '(predictions)')
             else:
-                fig.canvas.set_window_title(sample_token)
+                # fig.canvas.set_window_title(sample_token)
+                fig.canvas.manager.set_window_title(sample_token)
+
         else:  # Set title on if rendering as part of render_sample.
             ax.set_title(camera_channel)
         ax.imshow(im)
