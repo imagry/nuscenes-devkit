@@ -199,6 +199,7 @@ class DetectionMetrics:
 
         self.cfg = cfg
         self._label_aps = defaultdict(lambda: defaultdict(float))
+        self._label_recs = defaultdict(lambda: defaultdict(float))
         self._label_tp_errors = defaultdict(lambda: defaultdict(float))
         self.eval_time = None
 
@@ -207,6 +208,12 @@ class DetectionMetrics:
 
     def get_label_ap(self, detection_name: str, dist_th: float) -> float:
         return self._label_aps[detection_name][dist_th]
+
+    def add_label_rec(self, detection_name: str, dist_th: float, rec: float) -> None:
+        self._label_recs[detection_name][dist_th] = rec
+
+    def get_label_recs(self, detection_name: str, dist_th: float) -> float:
+        return self._label_recs[detection_name][dist_th]
 
     def add_label_tp(self, detection_name: str, metric_name: str, tp: float):
         self._label_tp_errors[detection_name][metric_name] = tp
@@ -226,6 +233,28 @@ class DetectionMetrics:
     def mean_ap(self) -> float:
         """ Calculates the mean AP by averaging over distance thresholds and classes. """
         return float(np.mean(list(self.mean_dist_aps.values())))
+
+    @property
+    def mean_dist_recs(self) -> Dict[str, float]:
+        """ Calculates the mean over distance thresholds for each label. """
+        return {class_name: np.mean(list(d.values())) for class_name, d in self._label_recs.items()}
+
+    @property
+    def mean_rec(self) -> float:
+        """ Calculates the mean AP by averaging over distance thresholds and classes. """
+        return float(np.mean(list(self.mean_dist_recs.values())))
+
+    def compute_mf1(self):
+        """ Calculates the mean over distance thresholds for each label. """
+        mean_dist_ap = self.mean_dist_aps
+        mean_dist_rec = self.mean_dist_recs
+        f1_dict = {}
+        for class_name in mean_dist_ap:
+            f1 = 2*((mean_dist_ap[class_name]*mean_dist_rec[class_name])/(
+                    mean_dist_ap[class_name]+mean_dist_rec[class_name]))
+            f1_dict[class_name] = f1
+        return sum(f1_dict.values()) / len(f1_dict)
+
 
     @property
     def tp_errors(self) -> Dict[str, float]:
@@ -280,7 +309,9 @@ class DetectionMetrics:
             'tp_scores': self.tp_scores,
             'nd_score': self.nd_score,
             'eval_time': self.eval_time,
-            'cfg': self.cfg.serialize()
+            'cfg': self.cfg.serialize(),
+            'mean_rec': self.mean_rec,
+            'mean_dist_recs': self.mean_dist_recs,
         }
 
     @classmethod

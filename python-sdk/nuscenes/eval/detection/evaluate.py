@@ -21,7 +21,7 @@ from nuscenes.eval.common.loaders import (
     load_prediction,
     load_prediction_of_sample_tokens,
 )
-from nuscenes.eval.detection.algo import accumulate, calc_ap, calc_tp
+from nuscenes.eval.detection.algo import accumulate, calc_ap, calc_tp, custom_accumulate, calc_md
 from nuscenes.eval.detection.constants import TP_METRICS
 from nuscenes.eval.detection.data_classes import (
     DetectionBox,
@@ -117,7 +117,7 @@ class DetectionEval:
 
         self.sample_tokens = self.gt_boxes.sample_tokens
 
-    def evaluate(self) -> Tuple[DetectionMetrics, DetectionMetricDataList]:
+    def evaluate(self, custom_evaluate = False) -> Tuple[DetectionMetrics, DetectionMetricDataList]:
         """
         Performs the actual evaluation.
         :return: A tuple of high-level and the raw metric data.
@@ -132,7 +132,10 @@ class DetectionEval:
         metric_data_list = DetectionMetricDataList()
         for class_name in self.cfg.class_names:
             for dist_th in self.cfg.dist_ths:
-                md = accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
+                if not custom_evaluate:
+                    md = accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
+                else:
+                    md = custom_accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
                 metric_data_list.set(class_name, dist_th, md)
 
         # -----------------------------------
@@ -147,6 +150,9 @@ class DetectionEval:
                 metric_data = metric_data_list[(class_name, dist_th)]
                 ap = calc_ap(metric_data, self.cfg.min_recall, self.cfg.min_precision)
                 metrics.add_label_ap(class_name, dist_th, ap)
+                if custom_evaluate:
+                    rec = calc_md(metric_data.recall, self.cfg.min_recall, self.cfg.min_precision)
+                    metrics.add_label_rec(class_name, dist_th, rec)
 
             # Compute TP metrics.
             for metric_name in TP_METRICS:
@@ -192,7 +198,8 @@ class DetectionEval:
 
     def main(self,
              plot_examples: int = 0,
-             render_curves: bool = True) -> Dict[str, Any]:
+             render_curves: bool = True,
+             custom_evaluate=False) -> Dict[str, Any]:
         """
         Main function that loads the evaluation code, visualizes samples, runs the evaluation and renders stat plots.
         :param plot_examples: How many example visualizations to write to disk.
@@ -220,7 +227,7 @@ class DetectionEval:
                                  savepath=os.path.join(example_dir, '{}.png'.format(sample_token)))
 
         # Run evaluation.
-        metrics, metric_data_list = self.evaluate()
+        metrics, metric_data_list = self.evaluate(custom_evaluate)
 
         # Render PR and TP curves.
         if render_curves:
@@ -238,6 +245,9 @@ class DetectionEval:
 
         # Print high-level metrics.
         print('mAP: %.4f' % (metrics_summary['mean_ap']))
+        if custom_evaluate:
+            print('mRec: %.4f' % (metrics_summary['mean_rec']))
+            print('mF1: %.4f' % (metrics.compute_mf1()))
         err_name_mapping = {
             'trans_err': 'mATE',
             'scale_err': 'mASE',
@@ -253,11 +263,24 @@ class DetectionEval:
         # Print per-class metrics.
         print()
         print('Per-class results:')
-        print('%-20s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s' % ('Object Class', 'AP', 'ATE', 'ASE', 'AOE', 'AVE', 'AAE'))
+        print('%-20s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s' % ('Object Class', 'AP', 'ARec', 'F1', 'ATE', 'ASE',
+                                                                   'AOE', 'AVE', 'AAE'))
         class_aps = metrics_summary['mean_dist_aps']
         class_tps = metrics_summary['label_tp_errors']
+        class_recs = metrics_summary['mean_dist_recs']
+
         for class_name in class_aps.keys():
-            print('%-20s\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f'
+            if custom_evaluate:
+                f1 = 2*((class_aps[class_name]*class_recs[class_name])/(class_aps[class_name]+class_recs[class_name]))
+                print('%-20s\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f'
+                      % (class_name, class_aps[class_name], class_recs[class_name], f1,
+                         class_tps[class_name]['trans_err'],
+                         class_tps[class_name]['scale_err'],
+                         class_tps[class_name]['orient_err'],
+                         class_tps[class_name]['vel_err'],
+                         class_tps[class_name]['attr_err']))
+            else:
+                print('%-20s\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f'
                 % (class_name, class_aps[class_name],
                     class_tps[class_name]['trans_err'],
                     class_tps[class_name]['scale_err'],
@@ -272,6 +295,38 @@ class NuScenesEval(DetectionEval):
     """
     Dummy class for backward-compatibility. Same as DetectionEval.
     """
+
+class DetectionEval2(DetectionEval):
+    """
+    This is the official nuScenes detection evaluation code.
+    Results are written to the provided output_dir.
+
+    nuScenes uses the following detection metrics:
+    - Mean Average Precision (mAP): Uses center-distance as matching criterion; averaged over distance thresholds.
+    - True Positive (TP) metrics: Average of translation, velocity, scale, orientation and attribute errors.
+    - nuScenes Detection Score (NDS): The weighted sum of the above.
+
+    Here is an overview of the functions in this method:
+    - init: Loads GT annotations and predictions stored in JSON format and filters the boxes.
+    - run: Performs evaluation and dumps the metric data to disk.
+    - render: Renders various plots and dumps to disk.
+
+    We assume that:
+    - Every sample_token is given in the results, although there may be not predictions for that sample.
+
+    Please see https://www.nuscenes.org/object-detection for more details.
+    """
+    def __init__(self,
+                 nusc: NuScenes,
+                 config: DetectionConfig,
+                 result_path: str,
+                 eval_set: str,
+                 output_dir: str = None,
+                 verbose: bool = True):
+        config.min_precision = 0.0
+        config.min_recall = 0.0
+        config.dist_ths = [2.0]
+        super().__init__(nusc, config, result_path, eval_set, output_dir, verbose)
 
 
 if __name__ == "__main__":
@@ -297,6 +352,12 @@ if __name__ == "__main__":
                         help='Whether to render PR and TP curves to disk.')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Whether to print to stdout.')
+    parser.add_argument('--custom', type=bool, default=False,
+                        help='Whether to use nuscenes evaluation or custom evaluation.')
+    parser.add_argument('--conf_thresholds', type=list, default=[0.3]*10,
+                        help='Whether to use nuscenes evaluation or custom evaluation.')
+
+
     args = parser.parse_args()
 
     result_path_ = os.path.expanduser(args.result_path)
@@ -305,7 +366,7 @@ if __name__ == "__main__":
     dataroot_ = args.dataroot
     version_ = args.version
     config_path = args.config_path
-    plot_examples_ = args.plot_examples
+    plot_examples_ = 0
     render_curves_ = bool(args.render_curves)
     verbose_ = bool(args.verbose)
 
@@ -315,7 +376,39 @@ if __name__ == "__main__":
         with open(config_path, 'r') as _f:
             cfg_ = DetectionConfig.deserialize(json.load(_f))
 
+    if args.custom:
+        cat2indx_nuscenes = {
+            'car': 0,
+            'truck': 1,
+            'construction_vehicle': 2,
+            'bus': 3,
+            'trailer': 4,
+            'barrier': 5,
+            'motorcycle': 6,
+            'bicycle': 7,
+            'pedestrian': 8,
+            'traffic_cone': 9,
+        }
+        with open(result_path_, 'r') as f:
+            json_results = json.load(f)
+        results_th = {}
+        for token, detections in json_results['results'].items():
+            results_th[token] = []
+            for det in detections:
+                if det['detection_score'] > args.conf_thresholds[cat2indx_nuscenes[det['detection_name']]]:
+                    results_th[token].append(det)
+        filtered_results = {'meta': json_results['meta'], 'results': results_th}
+        result_path_ = os.path.join(os.path.dirname(args.result_path),
+                                    f'{os.path.splitext(os.path.basename(args.result_path))[0]}_th_filtered.json')
+        with open(result_path_, 'w') as f:
+            json.dump(filtered_results, f, indent=4)
+
+
     nusc_ = NuScenes(version=version_, verbose=verbose_, dataroot=dataroot_)
-    nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
-                              output_dir=output_dir_, verbose=verbose_)
-    nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_)
+    if args.custom:
+        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+                                  output_dir=output_dir_, verbose=verbose_)
+    else:
+        nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+                                   output_dir=output_dir_, verbose=verbose_)
+    nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_, custom_evaluate=args.custom)
