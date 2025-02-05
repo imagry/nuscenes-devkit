@@ -242,7 +242,7 @@ class DetectionMetrics:
     @property
     def mean_rec(self) -> float:
         """ Calculates the mean AP by averaging over distance thresholds and classes. """
-        return float(np.mean(list(self.mean_dist_recs.values())))
+        return float(np.mean(list(self.mean_dist_recs.values()))) if len(self.mean_dist_recs.values()) else np.nan
 
     def compute_mf1(self):
         """ Calculates the mean over distance thresholds for each label. """
