@@ -357,9 +357,9 @@ if __name__ == "__main__":
                         help='Whether to render PR and TP curves to disk.')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Whether to print to stdout.')
-    parser.add_argument('--custom', type=bool, default=False,
+    parser.add_argument('--custom', action="store_true",
                         help='Whether to use nuscenes evaluation or custom evaluation.')
-    parser.add_argument('--conf_thresholds', type=list, default=[0.3]*10,
+    parser.add_argument('--conf_thresholds', nargs='*', type=float,
                         help='Whether to use nuscenes evaluation or custom evaluation.')
 
 
@@ -380,8 +380,14 @@ if __name__ == "__main__":
     else:
         with open(config_path, 'r') as _f:
             cfg_ = DetectionConfig.deserialize(json.load(_f))
+    if args.conf_thresholds is None:
+        conf_thresholds = False
+    elif len(args.conf_thresholds) == 0:
+        conf_thresholds = [0.3]*10
+    else:
+        conf_thresholds = args.conf_thresholds
 
-    if args.custom:
+    if args.custom and conf_thresholds:
         cat2indx_nuscenes = {
             'car': 0,
             'truck': 1,
