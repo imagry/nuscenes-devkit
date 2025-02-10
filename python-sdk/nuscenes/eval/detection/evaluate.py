@@ -9,6 +9,9 @@ import time
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
 from nuscenes import NuScenes
 from nuscenes.eval.common.config import config_factory
 from nuscenes.eval.common.data_classes import EvalBoxes
@@ -269,8 +272,9 @@ class DetectionEval:
 
         if custom_evaluate:
             print('%-20s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s' % (
-                'Object Class', 'AP', 'ARec', 'F1', 'ATE', 'ASE',
+                'Object Class', 'Prec', 'Rec', 'F1', 'ATE', 'ASE',
                 'AOE', 'AVE', 'AAE'))
+            self.optim_metrics = pd.DataFrame({'class': [], 'precision': [], 'recall': [], 'f1': []})
             for class_name in class_aps.keys():
                 f1 = 2*((class_aps[class_name]*class_recs[class_name])/(class_aps[class_name]+class_recs[class_name]))
                 print('%-20s\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f\t%-6.3f'
@@ -280,6 +284,8 @@ class DetectionEval:
                          class_tps[class_name]['orient_err'],
                          class_tps[class_name]['vel_err'],
                          class_tps[class_name]['attr_err']))
+                self.optim_metrics.loc[len(self.optim_metrics)] = [class_name, class_aps[class_name], class_recs[class_name], f1]
+
         else:
             print('%-20s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s\t%-6s' % (
                     'Object Class', 'AP', 'ATE', 'ASE',
@@ -333,6 +339,59 @@ class DetectionEval2(DetectionEval):
         config.dist_ths = [2.0]
         super().__init__(nusc, config, result_path, eval_set, output_dir, verbose)
 
+cat2indx_nuscenes = {
+'car': 0,
+'truck': 1,
+'construction_vehicle': 2,
+'bus': 3,
+'trailer': 4,
+'barrier': 5,
+'motorcycle': 6,
+'bicycle': 7,
+'pedestrian': 8,
+'traffic_cone': 9,
+}
+
+def export_json(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def filter_predictions(preds, conf_thresholds, cat2indx_nuscenes, args, name = ''):
+    with open(preds, 'r') as f:
+        json_results = json.load(f)
+    results_th = {
+        token: [det for det in detections if det['detection_score'] > conf_thresholds[cat2indx_nuscenes[det['detection_name']]]]
+        for token, detections in json_results['results'].items()
+    }
+    filtered_results = {'meta': json_results['meta'], 'results': results_th}
+    result_path = os.path.join(os.path.dirname(args.result_path),
+                                f'{os.path.splitext(os.path.basename(args.result_path))[0]}_th_filtered_{name}.json')
+    export_json(result_path, filtered_results)
+    return result_path
+
+def compute_conf_thresh(preds, metric, args):
+    all_dfs = pd.DataFrame()
+    print('Compute evaluation for confidence thresholds')
+    result_path_ = preds
+    for i in tqdm(np.arange(0.3, 0.6, 0.1)):
+        i = round(i, 1)
+        conf_thresholds = np.array([i] * 10)
+        result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args, str(i))
+        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+                                   output_dir=output_dir_, verbose=verbose_)
+        nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_, custom_evaluate=args.custom)
+        df = nusc_eval.optim_metrics
+        df['conf_thresh'] = i
+        all_dfs = pd.concat([all_dfs, df], ignore_index=True)
+    result = all_dfs.loc[all_dfs.groupby('class')[metric].idxmax()]
+    conf_dict = {}
+    for cat in cat2indx_nuscenes.keys():
+        conf_dict[cat] = result[result['class'] == cat]['conf_thresh'].iloc[0]
+    export_json(os.path.join(os.path.dirname(result_path_), 'conf_threshold_optims'), conf_dict)
+    conf_list = list(conf_dict.values())
+    print(f'conf_thresholds:{conf_dict}')
+    return conf_list
+
 
 if __name__ == "__main__":
 
@@ -360,9 +419,9 @@ if __name__ == "__main__":
     parser.add_argument('--custom', action="store_true",
                         help='Whether to use nuscenes evaluation or custom evaluation.')
     parser.add_argument('--conf_thresholds', nargs='*', type=float,
-                        help='Whether to use nuscenes evaluation or custom evaluation.')
-
-
+                        help='Filter predictions with conf thresholds.')
+    parser.add_argument('--conf_thresholds_optim', type=str, default='F1',
+                        choices=["precision", "recall", "f1"], help='Use and compute conf threshold')
     args = parser.parse_args()
 
     result_path_ = os.path.expanduser(args.result_path)
@@ -386,36 +445,16 @@ if __name__ == "__main__":
         conf_thresholds = [0.3]*10
     else:
         conf_thresholds = args.conf_thresholds
-
-    if args.custom and conf_thresholds:
-        cat2indx_nuscenes = {
-            'car': 0,
-            'truck': 1,
-            'construction_vehicle': 2,
-            'bus': 3,
-            'trailer': 4,
-            'barrier': 5,
-            'motorcycle': 6,
-            'bicycle': 7,
-            'pedestrian': 8,
-            'traffic_cone': 9,
-        }
-        with open(result_path_, 'r') as f:
-            json_results = json.load(f)
-        results_th = {}
-        for token, detections in json_results['results'].items():
-            results_th[token] = []
-            for det in detections:
-                if det['detection_score'] > args.conf_thresholds[cat2indx_nuscenes[det['detection_name']]]:
-                    results_th[token].append(det)
-        filtered_results = {'meta': json_results['meta'], 'results': results_th}
-        result_path_ = os.path.join(os.path.dirname(args.result_path),
-                                    f'{os.path.splitext(os.path.basename(args.result_path))[0]}_th_filtered.json')
-        with open(result_path_, 'w') as f:
-            json.dump(filtered_results, f, indent=4)
-
-
     nusc_ = NuScenes(version=version_, verbose=verbose_, dataroot=dataroot_)
+
+    if args.custom and args.conf_thresholds_optim:
+        conf_list = compute_conf_thresh(result_path_, args.conf_thresholds_optim, args)
+        result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
+
+    elif args.custom and conf_thresholds:
+        result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args)
+
+
     if args.custom:
         nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                                   output_dir=output_dir_, verbose=verbose_)
