@@ -133,6 +133,10 @@ class DetectionEval:
         if self.verbose:
             print('Accumulating metric data...')
         metric_data_list = DetectionMetricDataList()
+        import pandas as pd
+        # df = pd.DataFrame(columns=['det_name_gt', 'det_name_pred', 'translation_gt', 'translation_pred',
+        #                            'rotation_gt', 'rotation_pred', 'size_gt', 'size_pred', 'det_score_pred',
+        #                            'sample_token'])
         for class_name in self.cfg.class_names:
             for dist_th in self.cfg.dist_ths:
                 if not custom_evaluate:
@@ -140,6 +144,8 @@ class DetectionEval:
                 else:
                     md = custom_accumulate(self.gt_boxes, self.pred_boxes, class_name, self.cfg.dist_fcn_callable, dist_th)
                 metric_data_list.set(class_name, dist_th, md)
+
+        # df.to_csv('/opt/imagry/POC_STREAMPETR/evaluation_boxes_CenterNet.csv')
 
         # -----------------------------------
         # Step 2: Calculate metrics from the data.
@@ -420,7 +426,7 @@ if __name__ == "__main__":
                         help='Whether to use nuscenes evaluation or custom evaluation.')
     parser.add_argument('--conf_thresholds', nargs='*', type=float,
                         help='Filter predictions with conf thresholds.')
-    parser.add_argument('--conf_thresholds_optim', type=str, default='F1',
+    parser.add_argument('--conf_thresholds_optim', type=str, nargs='?', default=None, const='f1',
                         choices=["precision", "recall", "f1"], help='Use and compute conf threshold')
     args = parser.parse_args()
 
@@ -447,13 +453,12 @@ if __name__ == "__main__":
         conf_thresholds = args.conf_thresholds
     nusc_ = NuScenes(version=version_, verbose=verbose_, dataroot=dataroot_)
 
-    if args.custom and args.conf_thresholds_optim:
-        conf_list = compute_conf_thresh(result_path_, args.conf_thresholds_optim, args)
-        result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
-
-    elif args.custom and conf_thresholds:
+    if args.custom and conf_thresholds:
         result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args)
 
+    elif args.custom and args.conf_thresholds_optim:
+        conf_list = compute_conf_thresh(result_path_, args.conf_thresholds_optim, args)
+        result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
 
     if args.custom:
         nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,

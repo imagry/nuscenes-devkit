@@ -4,6 +4,7 @@
 from typing import Callable
 
 import numpy as np
+import pandas as pd
 
 from nuscenes.eval.common.data_classes import EvalBoxes
 from nuscenes.eval.common.utils import center_distance, scale_iou, yaw_diff, velocity_l2, attr_acc, cummean
@@ -169,7 +170,8 @@ def custom_accumulate(gt_boxes: EvalBoxes,
                class_name: str,
                dist_fcn: Callable,
                dist_th: float,
-               verbose: bool = False) -> DetectionMetricData:
+               verbose: bool = False,
+               df = None) -> DetectionMetricData:
     """
     Average Precision over predefined different recall thresholds for a single distance threshold.
     The recall/conf thresholds and other raw metrics will be used in secondary metrics.
@@ -263,11 +265,20 @@ def custom_accumulate(gt_boxes: EvalBoxes,
             match_data['attr_err'].append(1 - attr_acc(gt_box_match, pred_box))
             match_data['conf'].append(pred_box.detection_score)
 
+            # # ['det_name_gt', 'det_name_pred', 'translation_gt', 'translation_pred',
+            # #  'rotation_gt', 'rotation_pred', 'size_gt', 'size_pred', 'det_score_pred', 'sample_token']
+            # df.loc[len(df)] = [gt_box_match.detection_name, pred_box.detection_name, gt_box_match.translation,
+            #                    pred_box.translation, gt_box_match.rotation, pred_box.rotation, gt_box_match.size,
+            #                    pred_box.size, pred_box.detection_score, gt_box_match.sample_token]
+
         else:
             # No match. Mark this as a false positive.
             tp.append(0)
             fp.append(1)
             conf.append(pred_box.detection_score)
+            # df.loc[len(df)] = [np.nan, pred_box.detection_name, np.nan,
+            #                    pred_box.translation, np.nan, pred_box.rotation, np.nan,
+            #                    pred_box.size, pred_box.detection_score, pred_box.sample_token]
 
     # Check if we have any matches. If not, just return a "no predictions" array.
     if len(match_data['trans_err']) == 0:
@@ -326,7 +337,7 @@ def calc_ap(md: DetectionMetricData, min_recall: float, min_precision: float) ->
     return float(np.mean(prec)) / (1.0 - min_precision)
 
 def calc_md(md: DetectionMetricData, min_recall: float, min_precision: float) -> float:
-    """ Calculated average precision. """
+    """ Calculated metric data. """
 
     assert 0 <= min_precision < 1
     assert 0 <= min_recall <= 1
