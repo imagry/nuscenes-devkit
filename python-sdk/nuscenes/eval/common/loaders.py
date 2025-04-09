@@ -17,11 +17,12 @@ from nuscenes.utils.splits import create_splits_scenes, get_scenes_of_custom_spl
 from pyquaternion import Quaternion
 
 
-def load_prediction(result_path: str, max_boxes_per_sample: int, box_cls, verbose: bool = False) \
+def load_prediction(result_path: str, nusc: NuScenes, max_boxes_per_sample: int, box_cls, verbose: bool = False) \
         -> Tuple[EvalBoxes, Dict]:
     """
     Loads object predictions from file.
     :param result_path: Path to the .json result file provided by the user.
+    :param nusc: NuScenes object
     :param max_boxes_per_sample: Maximim number of boxes allowed per sample.
     :param box_cls: Type of box to load, e.g. DetectionBox or TrackingBox.
     :param verbose: Whether to print messages to stdout.
@@ -34,6 +35,16 @@ def load_prediction(result_path: str, max_boxes_per_sample: int, box_cls, verbos
     assert 'results' in data, 'Error: No field `results` in result file. Please note that the result format changed.' \
                               'See https://www.nuscenes.org/object-detection for more information.'
 
+    # ITAI: if 'is_annotated' key does not exist, assuming it's a legacy dataset and all frames are keyframes
+    # ITAI: if it does exist, take only the original keyframes for evaluation
+    # ITAI: anyway, remove from results data the non-original samples
+    if any(['is_annotated' in s for s in nusc.sample]):
+        original_sample_tokens = [s['token'] for s in nusc.sample if s['is_annotated']]
+    else:
+        original_sample_tokens = [s['token'] for s in nusc.sample]
+
+    data['results'] = {k: v for k, v in data['results'].items() if k in original_sample_tokens}
+    
     # Deserialize results and get meta data.
     all_results = EvalBoxes.deserialize(data['results'], box_cls)
     meta = data['meta']
@@ -73,18 +84,18 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
 
     # Check compatibility of split with nusc_version.
     version = nusc.version
-    if eval_split in {'train', 'val', 'train_detect', 'train_track'}:
-        assert version.endswith('trainval'), \
-            'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    elif eval_split in {'mini_train', 'mini_val'}:
-        assert version.endswith('mini'), \
-            'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    elif eval_split == 'test':
-        assert version.endswith('test'), \
-            'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
-    else:
-        raise ValueError('Error: Requested split {} which this function cannot map to the correct NuScenes version.'
-                         .format(eval_split))
+    # if eval_split in {'train', 'val', 'train_detect', 'train_track'}:
+    #     assert version.endswith('trainval'), \
+    #         'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
+    # elif eval_split in {'mini_train', 'mini_val'}:
+    #     assert version.endswith('mini'), \
+    #         'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
+    # elif eval_split == 'test':
+    #     assert version.endswith('test'), \
+    #         'Error: Requested split {} which is not compatible with NuScenes version {}'.format(eval_split, version)
+    # else:
+    #     raise ValueError('Error: Requested split {} which this function cannot map to the correct NuScenes version.'
+    #                      .format(eval_split))
 
     if eval_split == 'test':
         # Check that you aren't trying to cheat :).
@@ -100,12 +111,25 @@ def load_gt(nusc: NuScenes, eval_split: str, box_cls, verbose: bool = False) -> 
 
     all_annotations = EvalBoxes()
 
+    # ITAI: if 'is_annotated' key does not exist, assuming it's a legacy dataset and all frames are keyframes
+    # ITAI: if it does exist, take only the original keyframes for evaluation
+    if any(['is_annotated' in s for s in nusc.sample]):
+        original_sample_tokens = [s['token'] for s in nusc.sample if s['is_annotated']]
+        check_original = True
+    else:
+        check_original = False
+
+
     # Load annotations and filter predictions and annotations.
     tracking_id_set = set()
     for sample_token in tqdm.tqdm(sample_tokens, leave=verbose):
 
         sample = nusc.get('sample', sample_token)
         sample_annotation_tokens = sample['anns']
+
+        # ITAI: skip non-original samples
+        if check_original and sample_token not in original_sample_tokens:
+            continue
 
         sample_boxes = []
         for sample_annotation_token in sample_annotation_tokens:

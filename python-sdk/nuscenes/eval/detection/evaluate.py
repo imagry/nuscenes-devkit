@@ -93,8 +93,9 @@ class DetectionEval:
         if verbose:
             print('Initializing nuScenes detection evaluation')
 
+
         if is_predefined_split(split_name=eval_set):
-            self.pred_boxes, self.meta = load_prediction(self.result_path, self.cfg.max_boxes_per_sample, DetectionBox,
+            self.pred_boxes, self.meta = load_prediction(self.result_path, self.nusc, self.cfg.max_boxes_per_sample, DetectionBox,
                                                         verbose=verbose)
             self.gt_boxes = load_gt(self.nusc, self.eval_set, DetectionBox, verbose=verbose)
         else:
@@ -253,10 +254,12 @@ class DetectionEval:
             json.dump(metric_data_list.serialize(), f, indent=2)
 
         # Print high-level metrics.
-        print('mAP: %.4f' % (metrics_summary['mean_ap']))
         if custom_evaluate:
+            print('mPre: %.4f' % (metrics_summary['mean_ap']))
             print('mRec: %.4f' % (metrics_summary['mean_rec']))
             print('mF1: %.4f' % (metrics.compute_mf1()))
+        else:
+            print('mAP: %.4f' % (metrics_summary['mean_ap']))
         err_name_mapping = {
             'trans_err': 'mATE',
             'scale_err': 'mASE',
@@ -313,7 +316,7 @@ class NuScenesEval(DetectionEval):
     Dummy class for backward-compatibility. Same as DetectionEval.
     """
 
-class DetectionEval2(DetectionEval):
+class DetectionEvalCustom(DetectionEval):
     """
     This is the official nuScenes detection evaluation code.
     Results are written to the provided output_dir.
@@ -383,7 +386,7 @@ def compute_conf_thresh(preds, metric, args):
         i = round(i, 1)
         conf_thresholds = np.array([i] * 10)
         result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args, str(i))
-        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+        nusc_eval = DetectionEvalCustom(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                                    output_dir=output_dir_, verbose=verbose_)
         nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_, custom_evaluate=args.custom)
         df = nusc_eval.optim_metrics
@@ -461,7 +464,7 @@ if __name__ == "__main__":
         result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
 
     if args.custom:
-        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+        nusc_eval = DetectionEvalCustom(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                                   output_dir=output_dir_, verbose=verbose_)
     else:
         nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
