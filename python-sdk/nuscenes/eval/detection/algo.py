@@ -307,7 +307,7 @@ def custom_accumulate(gt_boxes: EvalBoxes,
 
         else:
             # For each match_data, we first calculate the accumulated mean.
-            match_data[key] = np.mean(np.array(match_data[key]))
+            match_data[key] = np.nanmean(np.array(match_data[key]))
 
     # ---------------------------------------------
     # Done. Instantiate MetricData and return

@@ -313,37 +313,37 @@ class NuScenesEval(DetectionEval):
     Dummy class for backward-compatibility. Same as DetectionEval.
     """
 
-class DetectionEval2(DetectionEval):
-    """
-    This is the official nuScenes detection evaluation code.
-    Results are written to the provided output_dir.
-
-    nuScenes uses the following detection metrics:
-    - Mean Average Precision (mAP): Uses center-distance as matching criterion; averaged over distance thresholds.
-    - True Positive (TP) metrics: Average of translation, velocity, scale, orientation and attribute errors.
-    - nuScenes Detection Score (NDS): The weighted sum of the above.
-
-    Here is an overview of the functions in this method:
-    - init: Loads GT annotations and predictions stored in JSON format and filters the boxes.
-    - run: Performs evaluation and dumps the metric data to disk.
-    - render: Renders various plots and dumps to disk.
-
-    We assume that:
-    - Every sample_token is given in the results, although there may be not predictions for that sample.
-
-    Please see https://www.nuscenes.org/object-detection for more details.
-    """
-    def __init__(self,
-                 nusc: NuScenes,
-                 config: DetectionConfig,
-                 result_path: str,
-                 eval_set: str,
-                 output_dir: str = None,
-                 verbose: bool = True):
-        config.min_precision = 0.0
-        config.min_recall = 0.0
-        config.dist_ths = [2.0]
-        super().__init__(nusc, config, result_path, eval_set, output_dir, verbose)
+# class DetectionEval2(DetectionEval):
+#     """
+#     This is the official nuScenes detection evaluation code.
+#     Results are written to the provided output_dir.
+#
+#     nuScenes uses the following detection metrics:
+#     - Mean Average Precision (mAP): Uses center-distance as matching criterion; averaged over distance thresholds.
+#     - True Positive (TP) metrics: Average of translation, velocity, scale, orientation and attribute errors.
+#     - nuScenes Detection Score (NDS): The weighted sum of the above.
+#
+#     Here is an overview of the functions in this method:
+#     - init: Loads GT annotations and predictions stored in JSON format and filters the boxes.
+#     - run: Performs evaluation and dumps the metric data to disk.
+#     - render: Renders various plots and dumps to disk.
+#
+#     We assume that:
+#     - Every sample_token is given in the results, although there may be not predictions for that sample.
+#
+#     Please see https://www.nuscenes.org/object-detection for more details.
+#     """
+#     def __init__(self,
+#                  nusc: NuScenes,
+#                  config: DetectionConfig,
+#                  result_path: str,
+#                  eval_set: str,
+#                  output_dir: str = None,
+#                  verbose: bool = True):
+#         # config.min_precision = 0.0
+#         # config.min_recall = 0.0
+#         # config.dist_ths = [2.0]
+#         super().__init__(nusc, config, result_path, eval_set, output_dir, verbose)
 
 cat2indx_nuscenes = {
 'car': 0,
@@ -375,7 +375,7 @@ def filter_predictions(preds, conf_thresholds, cat2indx_nuscenes, args, name = '
     export_json(result_path, filtered_results)
     return result_path
 
-def compute_conf_thresh(preds, metric, args):
+def compute_conf_thresh(preds, metric, args, cfg_):
     all_dfs = pd.DataFrame()
     print('Compute evaluation for confidence thresholds')
     result_path_ = preds
@@ -383,7 +383,7 @@ def compute_conf_thresh(preds, metric, args):
         i = round(i, 1)
         conf_thresholds = np.array([i] * 10)
         result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args, str(i))
-        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+        nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                                    output_dir=output_dir_, verbose=verbose_)
         nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_, custom_evaluate=args.custom)
         df = nusc_eval.optim_metrics
@@ -393,7 +393,7 @@ def compute_conf_thresh(preds, metric, args):
     conf_dict = {}
     for cat in cat2indx_nuscenes.keys():
         conf_dict[cat] = result[result['class'] == cat]['conf_thresh'].iloc[0]
-    export_json(os.path.join(os.path.dirname(result_path_), 'conf_threshold_optims'), conf_dict)
+    export_json(os.path.join(os.path.dirname(result_path_), 'conf_threshold_optims.json'), conf_dict)
     conf_list = list(conf_dict.values())
     print(f'conf_thresholds:{conf_dict}')
     return conf_list
@@ -453,17 +453,17 @@ if __name__ == "__main__":
         conf_thresholds = args.conf_thresholds
     nusc_ = NuScenes(version=version_, verbose=verbose_, dataroot=dataroot_)
 
-    if args.custom and conf_thresholds:
-        result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args)
-
-    elif args.custom and args.conf_thresholds_optim:
-        conf_list = compute_conf_thresh(result_path_, args.conf_thresholds_optim, args)
-        result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
-
     if args.custom:
-        nusc_eval = DetectionEval2(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
-                                  output_dir=output_dir_, verbose=verbose_)
-    else:
-        nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
+        cfg_.min_precision = 0.0
+        cfg_.min_recall = 0.0
+        cfg_.dist_ths = [2.0]
+        if conf_thresholds:
+            result_path_ = filter_predictions(result_path_, conf_thresholds, cat2indx_nuscenes, args)
+
+        elif args.conf_thresholds_optim:
+            conf_list = compute_conf_thresh(result_path_, args.conf_thresholds_optim, args, cfg_)
+            result_path_ = filter_predictions(result_path_, conf_list, cat2indx_nuscenes, args)
+
+    nusc_eval = DetectionEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                                    output_dir=output_dir_, verbose=verbose_)
     nusc_eval.main(plot_examples=plot_examples_, render_curves=render_curves_, custom_evaluate=args.custom)
