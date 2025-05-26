@@ -93,8 +93,9 @@ class DetectionEval:
         if verbose:
             print('Initializing nuScenes detection evaluation')
 
+
         if is_predefined_split(split_name=eval_set):
-            self.pred_boxes, self.meta = load_prediction(self.result_path, self.cfg.max_boxes_per_sample, DetectionBox,
+            self.pred_boxes, self.meta = load_prediction(self.result_path, self.nusc, self.cfg.max_boxes_per_sample, DetectionBox,
                                                         verbose=verbose)
             self.gt_boxes = load_gt(self.nusc, self.eval_set, DetectionBox, verbose=verbose)
         else:
@@ -253,10 +254,12 @@ class DetectionEval:
             json.dump(metric_data_list.serialize(), f, indent=2)
 
         # Print high-level metrics.
-        print('mAP: %.4f' % (metrics_summary['mean_ap']))
         if custom_evaluate:
+            print('mPre: %.4f' % (metrics_summary['mean_ap']))
             print('mRec: %.4f' % (metrics_summary['mean_rec']))
             print('mF1: %.4f' % (metrics.compute_mf1()))
+        else:
+            print('mAP: %.4f' % (metrics_summary['mean_ap']))
         err_name_mapping = {
             'trans_err': 'mATE',
             'scale_err': 'mASE',
